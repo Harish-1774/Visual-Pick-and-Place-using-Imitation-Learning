@@ -38,41 +38,23 @@ A tabletop scene contains:
 
 ```mermaid
 flowchart TB
-    subgraph seed["Initialization"]
-        ED[Expert demonstration HDF5]
-        AGG[(Aggregate dataset)]
-        CKPT[Warm-start policy checkpoint]
-        ED --> AGG
-    end
-
-    subgraph iter["DAgger iteration i"]
-        ROLL[Rollout collector]
-        STU[Student policy π_i]
-        EXP[IK expert oracle]
-        MIX["β-mixed action<br/>expert or student"]
-        RELABEL["Label every step<br/>with expert action"]
-        APPEND[Append to aggregate]
-        TRAIN["Fixed gradient steps<br/>on full aggregate"]
-        CKPT_NEW[Checkpoint π_{i+1}]
-
-        STU --> ROLL
-        EXP --> ROLL
-        ROLL --> MIX
-        MIX --> RELABEL
-        RELABEL --> APPEND
-        APPEND --> AGG
-        AGG --> TRAIN
-        CKPT --> TRAIN
-        TRAIN --> CKPT_NEW
-    end
-
-    seed --> iter
-    CKPT_NEW --> iter
+    ED[Expert demonstration HDF5] --> AGG[(Aggregate dataset)]
+    STU[Student policy] --> ROLL[Rollout collector]
+    EXP[IK expert oracle] --> ROLL
+    CKPT[Current checkpoint] --> STU
+    ROLL --> MIX[Beta-mixed execution]
+    MIX --> RELABEL[Expert relabeling]
+    RELABEL --> APPEND[Append to aggregate]
+    APPEND --> AGG
+    AGG --> TRAIN[Fixed gradient steps on aggregate]
+    CKPT --> TRAIN
+    TRAIN --> NEWCKPT[Updated checkpoint]
+    NEWCKPT --> CKPT
 ```
 
-### Path A DAgger (this implementation)
+### DAgger approach (this implementation)
 
-This project follows **Path A** DAgger as described in the original algorithm:
+This project implements the standard DAgger loop:
 
 | Design choice | Rationale |
 |---|---|
@@ -161,7 +143,7 @@ The student is a **BC-RNN visuomotor policy** trained through Robomimic's superv
 |---|---|---|
 | `--num_iterations` | `5` | Five rounds balance dataset growth against compute. Each iteration adds on-policy states; diminishing returns typically appear after a handful of rounds for tabletop tasks with moderate horizon. |
 | `--episodes_per_iteration` | `20` | Enough rollouts per round to sample diverse randomized cube/bin poses (see environment randomization ranges) without making a single iteration prohibitively slow in simulation. |
-| `--grad_steps_per_iteration` | `5000` | Fixed update budget per iteration (Path A DAgger). Chosen to be substantial enough to incorporate new data while avoiding overfitting to the latest batch. With batch size 32, this is ~160K samples seen per iteration. |
+| `--grad_steps_per_iteration` | `5000` | Fixed update budget per iteration. Chosen to be substantial enough to incorporate new data while avoiding overfitting to the latest batch. With batch size 32, this is ~160K samples seen per iteration. |
 | `--beta_schedule` | `inv_sqrt` | βᵢ = 1/√i. The inverse-square-root schedule is a standard DAgger choice: β=1.0 on iteration 1 (pure expert rollouts, safe exploration), β≈0.71 on iteration 2, β≈0.58 on iteration 3, etc. It decreases expert intervention smoothly without collapsing to zero too quickly. |
 | `--beta_schedule linear` | βᵢ = 1 − (i−1)/N | Alternative that reaches β=0 by the final iteration. Useful when you want the last round to be fully on-policy with no expert assistance. |
 | `--horizon` | `2500` | Maximum rollout steps. The IL environment allows 45 s episodes at 60 Hz effective control (120 Hz sim, decimation 2), yielding ~2700 steps. 2500 provides headroom while capping runaway rollouts from a failing student. |
@@ -380,7 +362,7 @@ visual_pick_and_place/
 
 1. **Privileged expert, visuomotor student** — the oracle uses ground-truth poses; the deployable policy uses only cameras and proprioception. This mirrors real-world IL where experts have more information during collection than the deployed agent.
 
-2. **Path A with fixed gradient steps** — predictable per-iteration cost and stable learning dynamics on a monotonically growing dataset.
+2. **Fixed gradient steps per iteration** — predictable per-iteration cost and stable learning dynamics on a monotonically growing dataset.
 
 3. **Inverse-square-root β schedule** — gradual handoff from expert-driven to student-driven rollouts without abrupt distribution shifts between iterations.
 
