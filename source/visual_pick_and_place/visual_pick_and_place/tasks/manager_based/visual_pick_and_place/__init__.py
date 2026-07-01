@@ -24,3 +24,23 @@ gym.register(
         "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
     },
 )
+
+gym.register(
+    id="Template-Visual-Pick-And-Place-IL-Visuomotor-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.visual_pick_and_place_il_env_cfg:VisualPickAndPlaceILVisuomotorEnvCfg",
+        "robomimic_bc_cfg_entry_point": f"{agents.__name__}:robomimic/bc_rnn_image_il.json",
+    },
+)
+
+gym.register(
+    id="Template-Visual-Pick-And-Place-IL-Dagger-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.visual_pick_and_place_dagger_env_cfg:VisualPickAndPlaceILDaggerEnvCfg",
+        "robomimic_bc_cfg_entry_point": f"{agents.__name__}:robomimic/bc_rnn_image_il.json",
+    },
+)
