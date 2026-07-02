@@ -5,24 +5,13 @@
 
 """Collect expert demonstrations and export them to Isaac Lab-compatible HDF5."""
 
+"""Launch Isaac Sim Simulator first."""
+
 import argparse
 import contextlib
 import os
-import sys
 
-import gymnasium as gym
-import torch
-
-import isaaclab_tasks  # noqa: F401
-
-with contextlib.suppress(ImportError):
-    import isaaclab_tasks_experimental  # noqa: F401
-from isaaclab_tasks.utils import (
-    add_launcher_args,
-    launch_simulation,
-    resolve_task_config,
-    setup_preset_cli,
-)
+from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Collect expert demonstrations for imitation learning.")
 parser.add_argument("--task", type=str, required=True, help="Name of the task.")
@@ -59,7 +48,7 @@ parser.add_argument(
 parser.add_argument(
     "--episode_timeout_s",
     type=float,
-    default=120.0,
+    default=60.0,
     help="Maximum duration per rollout in seconds before discarding the episode.",
 )
 parser.add_argument(
@@ -68,10 +57,24 @@ parser.add_argument(
     default=None,
     help="Maximum rollout attempts before aborting (defaults to 20x num_episodes).",
 )
-add_launcher_args(parser)
-parser.set_defaults(visualizer=["kit"])
-args_cli, hydra_args = setup_preset_cli(parser)
-sys.argv = [sys.argv[0]] + hydra_args
+parser.add_argument("--seed", type=int, default=42, help="Seed for torch and the Isaac Lab environment.")
+AppLauncher.add_app_launcher_args(parser)
+parser.set_defaults(headless=True)
+args_cli = parser.parse_args()
+
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
+"""Rest everything follows."""
+
+import gymnasium as gym
+import torch
+
+import isaaclab_tasks  # noqa: F401
+
+with contextlib.suppress(ImportError):
+    import isaaclab_tasks_experimental  # noqa: F401
+from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 import visual_pick_and_place.tasks  # noqa: F401
 from visual_pick_and_place.experts import (
@@ -84,9 +87,16 @@ from visual_pick_and_place.experts import (
 
 def main():
     """Run expert rollouts and export demonstrations to HDF5."""
-    torch.manual_seed(42)
+    torch.manual_seed(args_cli.seed)
 
-    env_cfg, _ = resolve_task_config(args_cli.task, "")
+    device = args_cli.device if args_cli.device is not None else "cuda:0"
+    env_cfg = parse_env_cfg(
+        args_cli.task,
+        device=device,
+        num_envs=args_cli.num_envs,
+        use_fabric=False if args_cli.disable_fabric else None,
+    )
+    env_cfg.seed = args_cli.seed
     output_dir, dataset_filename = setup_output_paths(args_cli.dataset_file)
 
     disable_timeout = args_cli.disable_timeout or args_cli.solver == "ik_pick_place"
@@ -95,48 +105,45 @@ def main():
     if args_cli.solver == "ik_pick_place":
         solver_kwargs["ee_speed"] = args_cli.ee_speed
 
-    with launch_simulation(env_cfg, args_cli):
-        configure_expert_collection_cfg(
-            env_cfg,
-            output_dir=output_dir,
-            dataset_filename=dataset_filename,
-            num_envs=args_cli.num_envs,
-            disable_timeout=disable_timeout,
-            use_relative_arm_action=use_relative_arm_action,
-            enable_cameras=args_cli.record_cameras,
-        )
-        env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-        if args_cli.disable_fabric:
-            env_cfg.sim.use_fabric = False
+    configure_expert_collection_cfg(
+        env_cfg,
+        output_dir=output_dir,
+        dataset_filename=dataset_filename,
+        num_envs=args_cli.num_envs,
+        disable_timeout=disable_timeout,
+        use_relative_arm_action=use_relative_arm_action,
+        enable_cameras=args_cli.record_cameras,
+    )
 
-        env = gym.make(args_cli.task, cfg=env_cfg)
-        solver = make_solver(args_cli.solver, env.unwrapped, **solver_kwargs)
-        max_episode_steps = None
-        if args_cli.episode_timeout_s > 0:
-            max_episode_steps = max(1, int(args_cli.episode_timeout_s / env.unwrapped.step_dt))
-        require_cubes_in_bins = args_cli.solver == "ik_pick_place"
-        collector = ExpertRolloutCollector(
-            env,
-            solver,
-            require_cubes_in_bins=require_cubes_in_bins,
-            max_episode_steps=max_episode_steps,
-        )
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    solver = make_solver(args_cli.solver, env.unwrapped, **solver_kwargs)
+    max_episode_steps = None
+    if args_cli.episode_timeout_s > 0:
+        max_episode_steps = max(1, int(args_cli.episode_timeout_s / env.unwrapped.step_dt))
+    require_cubes_in_bins = args_cli.solver == "ik_pick_place"
+    collector = ExpertRolloutCollector(
+        env,
+        solver,
+        require_cubes_in_bins=require_cubes_in_bins,
+        max_episode_steps=max_episode_steps,
+    )
 
-        print(f"[INFO]: Collecting {args_cli.num_episodes} successful episode(s) with solver '{args_cli.solver}'")
-        if require_cubes_in_bins:
-            print("[INFO]: Episodes are saved only when both cubes end up in their matching bins.")
-        if max_episode_steps is not None:
-            print(f"[INFO]: Episode timeout: {args_cli.episode_timeout_s:.1f}s ({max_episode_steps} steps).")
-        exported = collector.collect_episodes(args_cli.num_episodes, max_rollouts=args_cli.max_rollouts)
+    print(f"[INFO]: Collecting {args_cli.num_episodes} successful episode(s) with solver '{args_cli.solver}'")
+    if require_cubes_in_bins:
+        print("[INFO]: Episodes are saved only when both cubes end up in their matching bins.")
+    if max_episode_steps is not None:
+        print(f"[INFO]: Episode timeout: {args_cli.episode_timeout_s:.1f}s ({max_episode_steps} steps).")
+    exported = collector.collect_episodes(args_cli.num_episodes, max_rollouts=args_cli.max_rollouts)
 
-        dataset_path = os.path.join(output_dir, f"{dataset_filename}.hdf5")
-        print(f"[INFO]: Saved {exported} successful episode(s) to {dataset_path}")
-        if collector.skipped_episode_count:
-            print(f"[INFO]: Discarded {collector.skipped_episode_count} failed or timed-out rollout(s).")
+    dataset_path = os.path.join(output_dir, f"{dataset_filename}.hdf5")
+    print(f"[INFO]: Saved {exported} successful episode(s) to {dataset_path}")
+    if collector.skipped_episode_count:
+        print(f"[INFO]: Discarded {collector.skipped_episode_count} failed or timed-out rollout(s).")
 
-        solver.close()
-        env.close()
+    solver.close()
+    env.close()
 
 
 if __name__ == "__main__":
     main()
+    simulation_app.close()

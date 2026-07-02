@@ -65,11 +65,17 @@ def configure_expert_collection_cfg(
 
     if use_relative_arm_action:
         from isaaclab.envs import mdp
-        from isaaclab_assets.robots.franka import FRANKA_PANDA_HIGH_PD_CFG
 
-        env_cfg.scene.robot = FRANKA_PANDA_HIGH_PD_CFG.replace(
-            prim_path="{ENV_REGEX_NS}/Robot",
-            init_state=FRANKA_PANDA_HIGH_PD_CFG.init_state.replace(joint_pos=FRANKA_HORIZONTAL_READY_JOINT_POS),
+        # Mutate the existing robot cfg in place (matches FRANKA_PANDA_HIGH_PD_CFG) so we
+        # do not assign a new ArticulationCfg from isaaclab_assets, which can have a
+        # different class identity than interactive_scene expects after AppLauncher.
+        env_cfg.scene.robot.spawn.rigid_props.disable_gravity = True
+        env_cfg.scene.robot.actuators["panda_shoulder"].stiffness = 400.0
+        env_cfg.scene.robot.actuators["panda_shoulder"].damping = 80.0
+        env_cfg.scene.robot.actuators["panda_forearm"].stiffness = 400.0
+        env_cfg.scene.robot.actuators["panda_forearm"].damping = 80.0
+        env_cfg.scene.robot.init_state = env_cfg.scene.robot.init_state.replace(
+            joint_pos=FRANKA_HORIZONTAL_READY_JOINT_POS
         )
 
         env_cfg.actions.arm_action = mdp.RelativeJointPositionActionCfg(

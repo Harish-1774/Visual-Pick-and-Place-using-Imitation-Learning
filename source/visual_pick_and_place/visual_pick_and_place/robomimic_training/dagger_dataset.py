@@ -34,6 +34,30 @@ class DaggerEpisode:
     success: bool = False
 
 
+def ensure_reward_done_keys(hdf5_path: str) -> None:
+    """Backfill ``rewards``/``dones`` for any demo missing them, in canonical ``(N,)`` shape.
+
+    Expert seed demos exported by the recorder omit these keys. Robomimic would otherwise
+    zero-fill missing keys as shape ``(N, 1)`` while DAgger-appended demos store ``(N,)``; batches
+    mixing the two then fail to collate. Writing consistent ``(N,)`` keys everywhere avoids this.
+    """
+    added = 0
+    with h5py.File(hdf5_path, "a") as f:
+        for demo in f["data"].values():
+            num_steps = int(demo.attrs["num_samples"]) if "num_samples" in demo.attrs else demo["actions"].shape[0]
+            if "rewards" not in demo:
+                demo.create_dataset("rewards", data=np.zeros(num_steps, dtype=np.float32), compression="gzip")
+                added += 1
+            if "dones" not in demo:
+                dones = np.zeros(num_steps, dtype=np.uint8)
+                if num_steps > 0:
+                    dones[-1] = 1
+                demo.create_dataset("dones", data=dones, compression="gzip")
+                added += 1
+    if added:
+        print(f"[DAgger] Backfilled {added} missing rewards/dones dataset(s) in {hdf5_path}")
+
+
 def initialize_aggregate(seed_hdf5: str, output_path: str) -> None:
     """Copy the seed Robomimic HDF5 as the initial aggregate dataset."""
     seed_hdf5 = os.path.abspath(seed_hdf5)
@@ -47,6 +71,7 @@ def initialize_aggregate(seed_hdf5: str, output_path: str) -> None:
 
     if os.path.abspath(seed_hdf5) != output_path:
         shutil.copyfile(seed_hdf5, output_path)
+    ensure_reward_done_keys(output_path)
     print(f"[DAgger] Initialized aggregate dataset at {output_path}")
 
 
@@ -73,6 +98,9 @@ def _write_demo(group: h5py.Group, episode: DaggerEpisode) -> None:
     num_steps = actions.shape[0]
 
     group.create_dataset("actions", data=actions, compression="gzip")
+    # rewards/dones use canonical 1D (N,) shape. BC-RNN samples by demo boundaries (num_samples),
+    # not dones, so their values are unused for training, but the shape must match every other demo
+    # in the aggregate (see ensure_reward_done_keys) so mixed batches collate correctly.
     group.create_dataset("rewards", data=np.zeros(num_steps, dtype=np.float32), compression="gzip")
     group.create_dataset("dones", data=np.zeros(num_steps, dtype=np.uint8), compression="gzip")
     if num_steps > 0:
@@ -80,8 +108,10 @@ def _write_demo(group: h5py.Group, episode: DaggerEpisode) -> None:
 
     obs_grp = group.create_group("obs")
     obs_grp.create_dataset("obs", data=proprio, compression="gzip")
-    obs_grp.create_dataset("table_cam", data=table_cam, compression="gzip")
-    obs_grp.create_dataset("wrist_cam", data=wrist_cam, compression="gzip")
+    # Images use lzf (not gzip): far faster random-access decompression keeps the GPU fed
+    # during the fixed-gradient-step training phase, at the cost of slightly larger files.
+    obs_grp.create_dataset("table_cam", data=table_cam, compression="lzf")
+    obs_grp.create_dataset("wrist_cam", data=wrist_cam, compression="lzf")
 
     group.attrs["num_samples"] = num_steps
     group.attrs["success"] = int(episode.success)

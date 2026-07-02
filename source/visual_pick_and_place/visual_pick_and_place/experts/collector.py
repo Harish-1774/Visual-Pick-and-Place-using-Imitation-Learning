@@ -83,6 +83,13 @@ class ExpertRolloutCollector:
         for env_id in env_ids:
             if not success_by_env[env_id]:
                 self.skipped_episode_count += 1
+            else:
+                steps = int(self._episode_step_counts[env_id].item())
+                duration_s = steps * self._env.step_dt
+                print(
+                    f"[INFO]: Successful episode (env {env_id}): "
+                    f"{steps} steps (~{duration_s:.1f}s)"
+                )
 
         env_ids_tensor = torch.tensor(env_ids, device=device, dtype=torch.long)
         self.solver.reset(env_ids_tensor)

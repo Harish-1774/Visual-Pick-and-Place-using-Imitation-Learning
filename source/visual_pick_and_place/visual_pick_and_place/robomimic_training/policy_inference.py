@@ -31,13 +31,21 @@ def preprocess_policy_obs_dict(
     *,
     image_obs_keys: tuple[str, ...] = ("table_cam", "wrist_cam"),
 ) -> dict[str, np.ndarray]:
-    """Convert Isaac Lab policy observations to a single-env numpy dict for Robomimic."""
+    """Convert Isaac Lab policy observations to a single-env numpy dict for Robomimic.
+
+    Robomimic's ``RolloutPolicy`` does not run image preprocessing; it feeds observations to the
+    network as-is. The BC-RNN policy was trained on images that went through ``process_frame``
+    (HWC uint8 -> CHW float in [0, 1]), and its ``CropRandomizer`` expects CHW at eval time, so we
+    must reproduce that exact layout here. Passing raw HWC uint8 makes the crop randomizer index the
+    wrong axes and raises an assertion.
+    """
     obs: dict[str, np.ndarray] = {}
     for key, value in policy_obs.items():
         tensor = torch.squeeze(value).detach()
         if key in image_obs_keys:
-            # Env provides HWC uint8; Robomimic RolloutPolicy applies process_obs internally.
-            obs[key] = tensor.cpu().numpy()
+            image = tensor.permute(2, 0, 1).float() / 255.0
+            image = image.clip(0.0, 1.0)
+            obs[key] = image.cpu().numpy()
         else:
             obs[key] = tensor.cpu().numpy()
     return obs

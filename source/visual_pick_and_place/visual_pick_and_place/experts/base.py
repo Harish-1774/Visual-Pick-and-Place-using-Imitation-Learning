@@ -43,6 +43,14 @@ class ExpertSolverBase(ABC):
         """Optional early-stop signal per environment. Shape: (num_envs,), dtype bool."""
         return torch.zeros(state.num_envs, dtype=torch.bool, device=state.device)
 
+    def progress(self) -> torch.Tensor | None:
+        """Optional monotonically increasing per-env task-progress scalar.
+
+        Used by rollout collectors to detect a stalled (flailing) student and abort early.
+        Return ``None`` if the solver exposes no progress signal.
+        """
+        return None
+
     def close(self) -> None:
         """Release external resources used by the solver."""
         return

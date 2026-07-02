@@ -89,13 +89,16 @@ def train_dagger_iteration(
         obs_normalization_stats = trainset.get_obs_normalization_stats()
 
     train_sampler = trainset.get_dataset_sampler()
+    num_workers = config.train.num_data_workers
     train_loader = DataLoader(
         dataset=trainset,
         sampler=train_sampler,
         batch_size=config.train.batch_size,
         shuffle=(train_sampler is None),
-        num_workers=config.train.num_data_workers,
+        num_workers=num_workers,
         drop_last=True,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
     )
 
     model.set_train()

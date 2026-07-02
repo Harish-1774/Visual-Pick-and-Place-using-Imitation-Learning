@@ -105,6 +105,19 @@ class IKPickPlaceSolver(ExpertSolverBase):
         """Return grasp orientation broadcast to shape (num_envs, 4)."""
         return self.grasp_quat.unsqueeze(0).expand(num_envs, -1)
 
+    def _pick_phase_active(self) -> bool:
+        """True if any live env is still pre-grasp (pick targets should track the cube pose).
+
+        During DAgger rollouts the student can nudge a cube before it is grasped. Refreshing the
+        waypoint cache from the current cube pose every pre-grasp step keeps the expert labels
+        pointing at where the cube actually is, rather than a stale pre-planned location. Once the
+        cube is grasped it moves with the gripper, so refreshing is disabled from GRASP onward.
+        """
+        pregrasp = (self.phase == int(PickPlacePhase.APPROACH_PICK)) | (
+            self.phase == int(PickPlacePhase.DESCEND_PICK)
+        )
+        return bool((pregrasp & ~self.episode_done).any())
+
     def _rebuild_task_cache(self, state: PrivilegedState) -> None:
         tasks = parse_privileged_state(state)
         z_terms = []
@@ -250,7 +263,7 @@ class IKPickPlaceSolver(ExpertSolverBase):
         return (joint_target - self.default_arm_joint_pos) / self.arm_scale
 
     def compute_action(self, state: PrivilegedState) -> torch.Tensor:
-        if not self._cache_valid:
+        if not self._cache_valid or self._pick_phase_active():
             self._rebuild_task_cache(state)
 
         num_envs = state.num_envs
@@ -294,3 +307,8 @@ class IKPickPlaceSolver(ExpertSolverBase):
 
     def is_done(self, state: PrivilegedState) -> torch.Tensor:
         return self.episode_done.clone()
+
+    def progress(self) -> torch.Tensor:
+        """Monotonic per-env progress: object index scaled by phase count, plus current phase."""
+        phases_per_object = int(PickPlacePhase.DONE) + 1
+        return self.object_index * phases_per_object + self.phase
